@@ -21,6 +21,7 @@ env:
 jobs:
   update:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Check out packaging repository
         uses: actions/checkout@v4
@@ -98,20 +99,20 @@ jobs:
           }
           printf '%s\n' "$aur_host_key" > "$ssh_dir/known_hosts"
           chmod 644 "$ssh_dir/known_hosts"
-          export GIT_SSH_COMMAND="ssh -oBatchMode=yes -oStrictHostKeyChecking=yes -oUserKnownHostsFile=$ssh_dir/known_hosts"
+          export GIT_SSH_COMMAND="ssh -oBatchMode=yes -oConnectTimeout=10 -oServerAliveInterval=10 -oServerAliveCountMax=2 -oStrictHostKeyChecking=yes -oUserKnownHostsFile=$ssh_dir/known_hosts"
 
           aur_dir="$RUNNER_TEMP/aur-package"
           clone_aur() {
             local attempt
-            for attempt in 1 2 3 4 5; do
+            for attempt in 1 2; do
               rm -rf "$aur_dir"
-              if git clone --depth=1 "ssh://aur@aur.archlinux.org/${AUR_PKGBASE}.git" "$aur_dir"; then
+              if timeout 60s git clone --depth=1 "ssh://aur@aur.archlinux.org/${AUR_PKGBASE}.git" "$aur_dir"; then
                 return 0
               fi
-              echo "::warning::AUR clone attempt ${attempt}/5 failed; retrying."
-              sleep $((attempt * 15))
+              echo "::warning::AUR clone attempt ${attempt}/2 failed."
+              [[ "$attempt" -lt 2 ]] || return 1
+              sleep 15
             done
-            return 1
           }
           clone_aur
 
@@ -124,12 +125,12 @@ jobs:
             echo 'AUR package is already current.'
           else
             git -C "$aur_dir" commit -m "upgpkg: $(sed -n 's/^pkgver=//p' PKGBUILD)-1"
-            for attempt in 1 2 3 4 5; do
-              if git -C "$aur_dir" push origin HEAD:master; then
+            for attempt in 1 2; do
+              if timeout 60s git -C "$aur_dir" push origin HEAD:master; then
                 break
               fi
-              [[ "$attempt" -lt 5 ]] || exit 1
-              echo "::warning::AUR push attempt ${attempt}/5 failed; retrying."
-              sleep $((attempt * 15))
+              echo "::warning::AUR push attempt ${attempt}/2 failed."
+              [[ "$attempt" -lt 2 ]] || exit 1
+              sleep 15
             done
           fi
