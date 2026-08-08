@@ -1,0 +1,109 @@
+name: Update AUR package
+
+on:
+  schedule:
+    - cron: '15 */6 * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cc-switch-cli-musl-bin-update
+  cancel-in-progress: false
+
+env:
+  AUR_PKGBASE: cc-switch-cli-musl-bin
+  UPSTREAM_REPO: SaladDay/cc-switch-cli
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out packaging repository
+        uses: actions/checkout@v4
+
+      - name: Update and build in Arch Linux
+        id: update
+        run: |
+          set -Eeuo pipefail
+          docker run --rm \
+            --env UPSTREAM_REPO \
+            --volume "${GITHUB_WORKSPACE}:/workspace" \
+            archlinux:base-devel \
+            bash -Eeuo pipefail -c '
+              pacman -Syu --noconfirm --needed curl jq git openssh ca-certificates
+
+              host_uid=$(stat -c %u /workspace)
+              host_gid=$(stat -c %g /workspace)
+              getent group "$host_gid" >/dev/null || groupadd --gid "$host_gid" hostgroup
+              useradd --uid "$host_uid" --gid "$host_gid" --create-home builder 2>/dev/null || true
+
+              work=/tmp/aur-package
+              rm -rf "$work"
+              mkdir -p "$work"
+              cp /workspace/PKGBUILD /workspace/.SRCINFO /workspace/upstream-LICENSE "$work/"
+              chown -R "$host_uid:$host_gid" "$work"
+              runuser -u builder -- env HOME=/home/builder UPSTREAM_REPO="$UPSTREAM_REPO" \
+                bash /workspace/.github/scripts/update-package.sh "$work"
+
+              cp "$work/PKGBUILD" "$work/.SRCINFO" /workspace/
+            '
+
+          if git diff --quiet -- PKGBUILD .SRCINFO; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+          else
+            git diff --check
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit updated package metadata
+        if: steps.update.outputs.changed == 'true'
+        run: |
+          set -Eeuo pipefail
+          git config user.name 'SurTeam AUR updater'
+          git config user.email 'surteam-aur-updater@users.noreply.github.com'
+          git add PKGBUILD .SRCINFO
+          git commit -m "upgpkg: $(sed -n 's/^pkgver=//p' PKGBUILD)-1"
+          git push origin HEAD:main
+
+      - name: Synchronize AUR
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          set -Eeuo pipefail
+          if [[ -z "${AUR_SSH_PRIVATE_KEY:-}" ]]; then
+            echo '::warning::AUR_SSH_PRIVATE_KEY is not configured; AUR synchronization skipped.'
+            exit 0
+          fi
+
+          eval "$(ssh-agent -s)"
+          cleanup() {
+            ssh-add -D >/dev/null 2>&1 || true
+            ssh-agent -k >/dev/null 2>&1 || true
+            unset AUR_SSH_PRIVATE_KEY
+          }
+          trap cleanup EXIT
+
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+          ssh_dir="$RUNNER_TEMP/aur-ssh"
+          install -d -m 700 "$ssh_dir"
+          ssh-keyscan -H aur.archlinux.org > "$ssh_dir/known_hosts"
+          chmod 644 "$ssh_dir/known_hosts"
+          export GIT_SSH_COMMAND="ssh -oBatchMode=yes -oStrictHostKeyChecking=yes -oUserKnownHostsFile=$ssh_dir/known_hosts"
+
+          aur_dir="$RUNNER_TEMP/aur-package"
+          git clone --depth=1 "ssh://aur@aur.archlinux.org/${AUR_PKGBASE}.git" "$aur_dir"
+          cp PKGBUILD .SRCINFO upstream-LICENSE LICENSE "$aur_dir/"
+          git -C "$aur_dir" config user.name 'SurTeam AUR updater'
+          git -C "$aur_dir" config user.email 'surteam-aur-updater@users.noreply.github.com'
+          git -C "$aur_dir" add PKGBUILD .SRCINFO upstream-LICENSE LICENSE
+
+          if git -C "$aur_dir" diff --cached --quiet; then
+            echo 'AUR package is already current.'
+          else
+            git -C "$aur_dir" commit -m "upgpkg: $(sed -n 's/^pkgver=//p' PKGBUILD)-1"
+            git -C "$aur_dir" push origin HEAD:master
+          fi
