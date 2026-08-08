@@ -90,7 +90,13 @@ jobs:
           printf '%s\n' "$AUR_SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
           ssh_dir="$RUNNER_TEMP/aur-ssh"
           install -d -m 700 "$ssh_dir"
-          ssh-keyscan -H aur.archlinux.org > "$ssh_dir/known_hosts"
+          aur_host_key=$(ssh-keyscan -T 10 -t ed25519 aur.archlinux.org 2>/dev/null)
+          aur_host_fingerprint=$(printf '%s\n' "$aur_host_key" | ssh-keygen -lf - -E sha256 | awk '{print $2}')
+          [[ "$aur_host_fingerprint" == 'SHA256:RFzBCUItH9LZS0cKB5UE6ceAYhBD5C8GeOBip8Z11+4' ]] || {
+            echo '::error::AUR host key fingerprint changed; refusing to connect.'
+            exit 1
+          }
+          printf '%s\n' "$aur_host_key" > "$ssh_dir/known_hosts"
           chmod 644 "$ssh_dir/known_hosts"
           export GIT_SSH_COMMAND="ssh -oBatchMode=yes -oStrictHostKeyChecking=yes -oUserKnownHostsFile=$ssh_dir/known_hosts"
 
