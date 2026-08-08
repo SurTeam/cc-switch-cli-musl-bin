@@ -87,7 +87,7 @@ jobs:
           }
           trap cleanup EXIT
 
-          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -q -
           ssh_dir="$RUNNER_TEMP/aur-ssh"
           install -d -m 700 "$ssh_dir"
           aur_host_key=$(ssh-keyscan -T 10 -t ed25519 aur.archlinux.org 2>/dev/null)
