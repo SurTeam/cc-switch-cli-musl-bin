@@ -1,11 +1,7 @@
 name: Update AUR package
 
 on:
-  schedule:
-    - cron: '15 */6 * * *'
   workflow_dispatch:
-  push:
-    branches: [main]
 
 permissions:
   contents: write
